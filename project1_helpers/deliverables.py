@@ -7,7 +7,8 @@ import numpy as np
 import os
 import torch.optim as optim
 from PIL import Image
-
+from iou import *
+import tqdm 
 
 class BFSDataset(Dataset):
     def __init__(self,root_dir,scene_name, split= 'train', transform_size=(360,240)):
@@ -99,8 +100,72 @@ class SegmentationModel(nn.Module):
         x = self.output(x)
         return x.sigmoid()
 
-def training_loop(model, train_dataloader, validation_dataloader, optimizer, criterion):
-    # example arguments for training loop, feel free to create your own
+def training_loop(model, train_dataloader, validation_dataloader, optimizer, criterion,n_epochs):
+    #we run this on gpu if possible
+    loss_values = []
+    train_ious = []
+    val_ious = []
+    if(torch.cuda.is_available()):
+        device = torch.device('cuda')
+    model=model.to(device)
+    #criterion=nn.BCELoss()
+    #we tried two optimizer way 
+    #optimizer=optim.Adam(model.parameters(),lr=0.001)
+    #optimizer=optim.SGD(model.parameters(),lr=0.001,momentum=0.9)
+    metrics = {'loss_values': [],'train_ious':[], 'val_ious': []}
+    for n in tqdm(range(n_epochs)):
+        epoch_loss = 0
+        epoch_iou = 0
+        for x_batch, y_batch in train_dataloader:
+            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+            optimizer.zero_grad()
+            y_pred = model(x_batch)
+            loss = criterion(y_pred, y_batch)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+            epoch_iou += iou(y_pred, y_batch)
+        loss_values.append(epoch_loss/len(train_dataloader))
+        train_ious.append(epoch_iou/len(train_dataloader))
 
+        val_iou=0
+        for x_batch,y_batch in validation_dataloader:
+            with torch.torch_no_grad():
+                x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+                y_pred = model(x_batch)
+                val_iou += iou(y_pred, y_batch)
+        val_ious.append(val_iou/len(validation_dataloader))
+    metrics['loss_values'] = loss_values
+    metrics['train_ious'] = train_ious
+    metrics['val_ious'] = val_ious
     # return your trained model and any metrics you computed and would like for plotting, displaying in your report
     return model, metrics
+
+
+if __name__ == "__main__":
+    # Example for one scene
+    scene_name = "Buffalo Grove at Deerfield East"
+    root_dir = "\\BFSData"  # Current directory
+    
+    # Create datasets
+    train_dataset = BFSDataset(root_dir, scene_name, split='train')
+    val_dataset = BFSDataset(root_dir, scene_name, split='val')
+    
+    # Create dataloaders
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
+    
+    # Create model, criterion, and optimizer
+    model = SegmentationModel()
+    criterion = nn.BCELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
+    # Train model
+    trained_model, losses, train_ious, val_ious = training_loop(
+        model=model,
+        criterion=criterion,
+        optimizer=optimizer,
+        n_epochs=50,
+        train_loader=train_loader,
+        val_loader=val_loader
+    )
